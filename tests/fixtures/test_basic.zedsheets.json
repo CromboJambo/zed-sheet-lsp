@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "columns": {
+    "name": { "type": "string" },
+    "age": { "type": "number" },
+    "city": { "type": "string" },
+    "age_group": {
+      "type": "derived",
+      "nu_expr": "if $row.age < 30 { \"young\" } else { \"adult\" }"
+    }
+  },
+  "named_ranges": {}
+}

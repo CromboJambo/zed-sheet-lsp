@@ -1,0 +1,15 @@
+id = "zed-sheets"
+name = "Zed Sheets"
+description = "TSV-native spreadsheet LSP with Nushell scripting"
+version = "0.1.0"
+schema_version = 1
+authors = ["you"]
+repository = "https://github.com/you/zed-sheets"
+
+[grammars.tsv]
+repository = "https://github.com/nickel-lang/tree-sitter-tsv"  # or write a minimal one
+rev = "COMMIT_SHA"
+
+[language_servers.zed-sheets-lsp]
+name = "Zed Sheets LSP"
+languages = ["TSV"]

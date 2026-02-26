@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "columns": {
+    "product": { "type": "string" },
+    "name": { "type": "string" },
+    "quantity": { "type": "number" },
+    "price": { "type": "number", "unit": "USD" },
+    "cost": { "type": "number", "unit": "USD" },
+    "margin": {
+      "type": "derived",
+      "nu_expr": "$row.price - $row.cost"
+    },
+    "total": {
+      "type": "derived",
+      "nu_expr": "$data | get price | math sum"
+    }
+  },
+  "named_ranges": {
+    "q1_data": { "rows": [1, 3] }
+  }
+}

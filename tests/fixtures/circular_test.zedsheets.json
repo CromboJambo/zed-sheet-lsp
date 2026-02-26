@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "columns": {
+    "name": { "type": "string" },
+    "value1": { "type": "number" },
+    "value2": {
+      "type": "derived",
+      "nu_expr": "$row.value1 + 5"
+    },
+    "value3": {
+      "type": "derived",
+      "nu_expr": "$row.value2 * 2"
+    }
+  },
+  "named_ranges": {}
+}
