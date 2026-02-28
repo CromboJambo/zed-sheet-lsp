@@ -219,7 +219,7 @@ impl Document {
         }
 
         // Check for missing columns referenced in expressions
-        for (col_name, col_meta) in &self.sidecar.columns {
+        for (_col_name, col_meta) in &self.sidecar.columns {
             if let Some(nu_expr) = &col_meta.nu_expr {
                 let references: Vec<String> = nu_expr
                     .split('$')
@@ -313,15 +313,15 @@ impl Document {
 
             // If all values are null or no data
             if null_count > 0
-                && type_counts.get("null").unwrap_or(&0) >= (self.grid.rows.len() as usize / 2)
+                && *type_counts.get("null").unwrap_or(&0) >= (self.grid.rows.len() as usize / 2)
             {
                 return "null".to_string();
             }
 
             // Default to string when we can't determine a better type
-            "string".to_string()
+            return "string".to_string();
         } else {
-            "unknown".to_string()
+            return "unknown".to_string();
         }
     }
 
