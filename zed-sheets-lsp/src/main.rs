@@ -1,5 +1,5 @@
-use tower_lsp::{LspService, Server};
 use tokio::io::{stdin, stdout};
+use tower_lsp::{LanguageServer, LspService, Server};
 
 mod document;
 use document::Document;
@@ -9,9 +9,9 @@ async fn main() {
     let stdin = stdin();
     let stdout = stdout();
 
-    let (service, socket) = LspService::new(|client| {
-        Document::new(client)
-    });
+    // Create the LSP service with our document handler
+    let (service, socket) = LspService::new(|client| Document::new(client));
 
+    // Start the server
     Server::new(stdin, stdout, socket).serve(service).await;
 }

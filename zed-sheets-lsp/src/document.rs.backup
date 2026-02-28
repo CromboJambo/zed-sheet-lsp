@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use tower_lsp::Client;
-use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,14 +29,20 @@ impl Grid {
     }
 
     pub fn get_column(&self, index: usize) -> Option<&Vec<String>> {
-        self.rows.get(index)
+        if index < self.rows.len() {
+            Some(&self.rows[index])
+        } else {
+            None
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnMetadata {
     pub type_: String,
+    #[serde(rename = "unit")]
     pub unit: Option<String>,
+    #[serde(rename = "nu_expr")]
     pub nu_expr: Option<String>,
 }
 
@@ -49,7 +53,7 @@ pub struct NamedRange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sidecar {
-    pub version: String,
+    pub version: u32,
     pub columns: HashMap<String, ColumnMetadata>,
     pub named_ranges: HashMap<String, NamedRange>,
 }
@@ -64,14 +68,17 @@ impl Sidecar {
     }
 
     pub fn is_derived_column(&self, name: &str) -> bool {
-        self.columns
-            .get(name)
-            .map_or(false, |col| col.nu_expr.is_some())
+        if let Some(col) = self.columns.get(name) {
+            col.type_ == "derived"
+        } else {
+            false
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyGraph {
+    /// derived_col → set of source cols it references
     pub edges: HashMap<String, HashSet<String>>,
 }
 
@@ -82,15 +89,15 @@ impl DependencyGraph {
         }
     }
 
-    pub fn add_edge(&mut self, from: &str, to: &str) {
+    pub fn add_edge(&mut self, derived_col: String, source_col: String) {
         self.edges
-            .entry(from.to_string())
+            .entry(derived_col)
             .or_insert_with(HashSet::new)
-            .insert(to.to_string());
+            .insert(source_col);
     }
 
     pub fn has_cycle(&self) -> bool {
-        // Simple cycle detection using DFS
+        // DFS cycle detection
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
 
@@ -104,19 +111,18 @@ impl DependencyGraph {
 
     fn dfs_cycle_check(
         &self,
-        node: &str,
+        node: &String,
         visited: &mut HashSet<String>,
         rec_stack: &mut HashSet<String>,
     ) -> bool {
-        visited.insert(node.to_string());
-        rec_stack.insert(node.to_string());
+        visited.insert(node.clone());
+        rec_stack.insert(node.clone());
 
-        if let Some(neighbors) = self.edges.get(node) {
-            for neighbor in neighbors {
-                if !visited.contains(neighbor) && self.dfs_cycle_check(neighbor, visited, rec_stack)
-                {
+        if let Some(dependencies) = self.edges.get(node) {
+            for dep in dependencies {
+                if !visited.contains(dep) && self.dfs_cycle_check(dep, visited, rec_stack) {
                     return true;
-                } else if rec_stack.contains(neighbor) {
+                } else if rec_stack.contains(dep) {
                     return true;
                 }
             }
@@ -126,18 +132,21 @@ impl DependencyGraph {
         false
     }
 
-    pub fn dependents_of(&self, node: &str) -> Vec<String> {
-        let mut result = Vec::new();
-        for (from, tos) in &self.edges {
-            if tos.contains(node) {
-                result.push(from.clone());
-            }
-        }
-        result
+    pub fn dependents_of(&self, col: &str) -> Vec<String> {
+        self.edges
+            .iter()
+            .filter_map(|(k, deps)| {
+                if deps.contains(col) {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Document {
     client: Client,
     uri: Url,
@@ -156,7 +165,7 @@ impl Document {
                 rows: vec![],
             },
             sidecar: Sidecar {
-                version: "0.1".to_string(),
+                version: 1,
                 columns: HashMap::new(),
                 named_ranges: HashMap::new(),
             },
@@ -172,18 +181,20 @@ impl Document {
         self.grid = Grid::parse_tsv(content);
     }
 
-    pub fn load_sidecar(&mut self, content: &str) -> Result<(), serde_json::Error> {
-        self.sidecar = Sidecar::load_from_json(content)?;
+    pub fn load_sidecar(&mut self, sidecar_content: &str) -> Result<(), serde_json::Error> {
+        self.sidecar = Sidecar::load_from_json(sidecar_content)?;
+        self.update_dependency_graph();
         Ok(())
     }
 
     fn update_dependency_graph(&mut self) {
-        // Clear existing dependencies
-        self.dag = DependencyGraph::new();
+        // Clear existing edges
+        self.dag.edges.clear();
 
-        // Add dependencies based on column expressions
+        // Build dependency graph from sidecar expressions
         for (col_name, col_meta) in &self.sidecar.columns {
             if let Some(nu_expr) = &col_meta.nu_expr {
+                // Simple parsing to extract column references - this would be more sophisticated in real implementation
                 let references: Vec<String> = nu_expr
                     .split('$')
                     .filter(|s| s.starts_with("row."))
@@ -191,7 +202,9 @@ impl Document {
                     .collect();
 
                 for reference in references {
-                    self.dag.add_edge(&reference, col_name);
+                    if self.grid.column_index(&reference).is_some() {
+                        self.dag.add_edge(col_name.clone(), reference);
+                    }
                 }
             }
         }
@@ -249,95 +262,102 @@ impl Document {
         }
     }
 
-    pub fn get_hover_info(&self, params: HoverParams) -> Option<Hover> {
-        // For now we'll return basic hover info
-        let row_index = params.text_document_position_params.position.line as usize;
-        let col_index = params.text_document_position_params.position.character as usize;
-
-        if row_index < self.grid.rows.len() && col_index < self.grid.headers.len() {
-            let header = &self.grid.headers[col_index];
-            let value = &self.grid.rows[row_index][col_index];
-
-            Some(Hover {
-                contents: HoverContents::Scalar(MarkedString::String(format!(
-                    "{}: {}",
-                    header, value
-                ))),
-                range: Some(Range::new(
-                    params.text_document_position_params.position,
-                    params.text_document_position_params.position,
-                )),
-            })
-        } else {
-            None
+    pub fn get_hover_info(&self, position: Position) -> Option<String> {
+        // Get column name at position
+        let line = position.line as usize;
+        if line >= self.grid.rows.len() {
+            return None;
         }
+
+        let row = &self.grid.rows[line];
+        let col_index = position.character as usize;
+        if col_index >= row.len() {
+            return None;
+        }
+
+        // Get column name from headers
+        let header_name = if line == 0 {
+            self.grid.headers.get(col_index).cloned()
+        } else {
+            Some(
+                self.grid
+                    .headers
+                    .get(col_index)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        };
+
+        if let Some(header) = header_name {
+            if let Some(col_meta) = self.sidecar.columns.get(&header) {
+                let mut contents = vec![];
+
+                // Add column type
+                contents.push(format!("Type: {}", col_meta.type_));
+
+                // Add unit if present
+                if let Some(unit) = &col_meta.unit {
+                    contents.push(format!("Unit: {}", unit));
+                }
+
+                // Add nu expression if derived
+                if col_meta.type_ == "derived" {
+                    if let Some(expr) = &col_meta.nu_expr {
+                        contents.push(format!("Expression: {}", expr));
+                    }
+                }
+
+                // Add dependents
+                let dependents = self.dag.dependents_of(&header);
+                if !dependents.is_empty() {
+                    contents.push(format!("Dependents: {:?}", dependents));
+                }
+
+                return Some(contents.join("\n\n"));
+            }
+        }
+
+        None
     }
 
-    pub fn get_completions(&self, params: CompletionParams) -> Option<CompletionResponse> {
-        // For now we'll return basic completions
-        let trigger_character = params
-            .context
-            .as_ref()
-            .and_then(|ctx| ctx.trigger_character.as_ref());
+    pub fn get_completions(&self, position: Position) -> Vec<String> {
+        // Simple column name completions for now - would need more sophisticated parsing in real implementation
+        let mut items = vec![];
 
-        if let Some(trigger) = trigger_character {
-            if trigger == "." {
-                let mut items = Vec::new();
-                for header in &self.grid.headers {
-                    items.push(CompletionItem {
-                        label: header.clone(),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(String::from("Column")),
-                        ..Default::default()
-                    });
-                }
-                Some(CompletionResponse::Array(items))
-            } else if trigger == "$" {
-                let mut items = Vec::new();
-                for header in &self.grid.headers {
-                    items.push(CompletionItem {
-                        label: format!("row.{}", header),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(String::from("Column reference")),
-                        ..Default::default()
-                    });
-                }
-                Some(CompletionResponse::Array(items))
-            } else {
-                None
-            }
-        } else {
-            None
+        for col_name in &self.grid.headers {
+            items.push(col_name.clone());
         }
+
+        // Add some common nu builtins for completions
+        let nu_builtins = vec![
+            "get", "math", "if", "where", "select", "group-by", "sort-by",
+        ];
+        for builtin in nu_builtins {
+            items.push(builtin.to_string());
+        }
+
+        items
     }
 }
 
+// Implement the LSP methods
 impl Document {
     pub async fn did_open(&mut self, params: DidOpenTextDocumentParams) {
-        let content = params.text_document.text;
         self.set_uri(params.text_document.uri);
-        self.load_content(&content);
+        self.load_content(&params.text_document.text);
 
         // Try to load sidecar if exists
-        let sidecar_path = self
-            .uri
-            .to_file_path()
-            .unwrap_or_else(|_| PathBuf::from("/dev/null"));
-        // Try to load sidecar if exists
-        let sidecar_path = self
-            .uri
-            .to_file_path()
-            .ok()
-            .and_then(|path| {
-                let sidecar_filename = path
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().to_string())
-                    .unwrap_or_default()
-                    + ".zedsheets.json";
-                let parent = path.parent()?;
-                Some(parent.join(&sidecar_filename))
-            })
-            .unwrap_or_else(|| PathBuf::from("/dev/null"));
+        let sidecar_path = self.uri.to_file_path().unwrap_or_default();
+        let sidecar_filename = sidecar_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+            + ".zedsheets.json";
+        let sidecar_path = sidecar_path
+            .parent()
+            .unwrap_or_default()
+            .join(&sidecar_filename);
 
         if sidecar_path.exists() {
             let sidecar_content = std::fs::read_to_string(sidecar_path).unwrap_or_default();
@@ -349,34 +369,58 @@ impl Document {
     }
 
     pub async fn did_change(&mut self, params: DidChangeTextDocumentParams) {
-        let content = params
-            .content_changes
-            .first()
-            .map(|c| c.text.as_str())
-            .unwrap_or("");
-        self.load_content(content);
-
-        // Validate diagnostics
-        self.validate_diagnostics().await;
+        if let Some(content_changes) = params.content_changes.first() {
+            self.load_content(&content_changes.text);
+            self.validate_diagnostics().await;
+        }
     }
 
     pub async fn hover(&self, params: HoverParams) -> Option<Hover> {
-        self.get_hover_info(params)
+        let position = params.position;
+        if let Some(contents) = self.get_hover_info(position) {
+            Some(Hover {
+                contents: HoverContents::Scalar(MarkedString::from_markdown(contents)),
+                range: None,
+            })
+        } else {
+            None
+        }
     }
 
     pub async fn completion(&self, params: CompletionParams) -> Option<CompletionResponse> {
-        self.get_completions(params)
+        let position = params.position;
+        let items = self.get_completions(position);
+
+        Some(CompletionResponse::Array(
+            items
+                .into_iter()
+                .map(|label| CompletionItem {
+                    label,
+                    kind: Some(CompletionItemKind::TEXT),
+                    detail: None,
+                    documentation: None,
+                    deprecated: None,
+                    preselect: None,
+                    sort_text: None,
+                    filter_text: None,
+                    insert_text: None,
+                    insert_text_format: None,
+                    insert_text_mode: None,
+                    text_edit: None,
+                    additional_text_edits: None,
+                    command: None,
+                    commit_characters: None,
+                    data: None,
+                    label_details: None,
+                    tags: None,
+                })
+                .collect(),
+        ))
     }
 
-    pub async fn diagnostics(&self, _params: DocumentDiagnosticParams) -> DocumentDiagnosticReport {
+    pub async fn diagnostics(&self, params: DocumentDiagnosticParams) -> DocumentDiagnosticReport {
         // For now we'll just return an empty report - actual diagnostics would be more complex
-        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-            related_documents: Some(HashMap::new()),
-            full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: None,
-                items: Vec::new(),
-            },
-        })
+        DocumentDiagnosticReport::Full(DiagnosticReport::new(self.uri.clone(), vec![]))
     }
 }
 
@@ -384,7 +428,7 @@ impl Document {
 impl LanguageServer for Document {
     async fn initialize(
         &self,
-        _params: InitializeParams,
+        params: InitializeParams,
     ) -> Result<InitializeResult, tower_lsp::jsonrpc::Error> {
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
@@ -400,7 +444,6 @@ impl LanguageServer for Document {
                     trigger_characters: Some(vec![".".to_string(), "$".to_string()]),
                     all_commit_characters: None,
                     resolve_provider: None,
-                    completion_item: None,
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: None,
                     },
@@ -410,17 +453,11 @@ impl LanguageServer for Document {
                         identifier: None,
                         inter_file_dependencies: false,
                         workspace_diagnostics: false,
-                        work_done_progress_options: WorkDoneProgressOptions {
-                            work_done_progress: None,
-                        },
                     },
                 )),
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
-                    work_done_progress_options: WorkDoneProgressOptions {
-                        work_done_progress: None,
-                    },
                 })),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
@@ -428,7 +465,7 @@ impl LanguageServer for Document {
         })
     }
 
-    async fn initialized(&self, _params: InitializedParams) {
+    async fn initialized(&self, params: InitializedParams) {
         // No initialization needed
     }
 
@@ -437,12 +474,12 @@ impl LanguageServer for Document {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let doc = self.clone();
+        let mut doc = self.clone();
         doc.did_open(params).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let doc = self.clone();
+        let mut doc = self.clone();
         doc.did_change(params).await;
     }
 
@@ -455,5 +492,12 @@ impl LanguageServer for Document {
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>, tower_lsp::jsonrpc::Error> {
         Ok(self.completion(params).await)
+    }
+
+    async fn document_diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReport, tower_lsp::jsonrpc::Error> {
+        Ok(self.diagnostics(params).await)
     }
 }
