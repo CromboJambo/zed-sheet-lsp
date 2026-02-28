@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -249,24 +250,136 @@ impl Document {
         }
     }
 
-    pub fn get_hover_info(&self, params: HoverParams) -> Option<Hover> {
-        // For now we'll return basic hover info
-        let row_index = params.text_document_position_params.position.line as usize;
-        let col_index = params.text_document_position_params.position.character as usize;
+    pub fn infer_type_from_value(&self, value: &str) -> String {
+        // Default to string if empty or whitespace only
+        if value.trim().is_empty() {
+            return "null".to_string();
+        }
 
-        if row_index < self.grid.rows.len() && col_index < self.grid.headers.len() {
-            let header = &self.grid.headers[col_index];
-            let value = &self.grid.rows[row_index][col_index];
+        // Try to parse as integer first
+        if value.parse::<i64>().is_ok() {
+            return "integer".to_string();
+        }
+
+        // Try to parse as float
+        if value.parse::<f64>().is_ok() {
+            return "float".to_string();
+        }
+
+        // Check for date format (simple check)
+        if self.is_date_format(value) {
+            return "date".to_string();
+        }
+
+        // Default to string
+        "string".to_string()
+    }
+
+    pub fn infer_column_type(&self, column_name: &str) -> String {
+        let col_index = self.grid.column_index(column_name);
+        if let Some(index) = col_index {
+            let mut type_counts: HashMap<String, usize> = HashMap::new();
+            let mut null_count = 0;
+
+            // Count types in the column
+            for row in &self.grid.rows {
+                if index < row.len() {
+                    let value = &row[index];
+                    if value.trim().is_empty() {
+                        null_count += 1;
+                        type_counts.insert(
+                            "null".to_string(),
+                            type_counts.get("null").unwrap_or(&0) + 1,
+                        );
+                    } else {
+                        let inferred_type = self.infer_type_from_value(value);
+                        type_counts.insert(
+                            inferred_type.clone(),
+                            type_counts.get(&inferred_type).unwrap_or(&0) + 1,
+                        );
+                    }
+                }
+            }
+
+            // Return the most common type, or string if there's no clear winner
+            if !type_counts.is_empty() {
+                let max_count = *type_counts.values().max().unwrap();
+                for (type_name, count) in &type_counts {
+                    if *count == max_count && *type_name != "null" {
+                        return type_name.clone();
+                    }
+                }
+            }
+
+            // If all values are null or no data
+            if null_count > 0
+                && type_counts.get("null").unwrap_or(&0) >= (self.grid.rows.len() as usize / 2)
+            {
+                return "null".to_string();
+            }
+
+            // Default to string when we can't determine a better type
+            "string".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    pub fn is_date_format(&self, value: &str) -> bool {
+        // Simple date format checks - could be expanded
+        let formats = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"];
+        for format in formats.iter() {
+            if chrono::NaiveDate::parse_from_str(value, format).is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn get_hover_info(&self, params: HoverParams) -> Option<Hover> {
+        let position = params.text_document_position_params.position;
+        let row_index = position.line as usize;
+        let col_index = position.character as usize;
+
+        // Check if we're hovering a header cell (row 0)
+        if row_index == 0 && col_index < self.grid.headers.len() {
+            let column_name = &self.grid.headers[col_index];
+            let inferred_type = self.infer_column_type(column_name);
+
+            // Calculate null count for this column
+            let mut null_count = 0;
+            for row in &self.grid.rows {
+                if col_index < row.len() && row[col_index].trim().is_empty() {
+                    null_count += 1;
+                }
+            }
+
+            // Create markdown hover content
+            let markdown_content = format!(
+                "## Column: {}\n\n**Type:** {}\n**Null Count:** {}",
+                column_name, inferred_type, null_count
+            );
 
             Some(Hover {
-                contents: HoverContents::Scalar(MarkedString::String(format!(
-                    "{}: {}",
-                    header, value
-                ))),
-                range: Some(Range::new(
-                    params.text_document_position_params.position,
-                    params.text_document_position_params.position,
-                )),
+                contents: HoverContents::Scalar(MarkedString::String(markdown_content)),
+                range: Some(Range::new(position, position)),
+            })
+        } else if row_index < self.grid.rows.len() && col_index < self.grid.headers.len() {
+            let column_name = &self.grid.headers[col_index];
+            let value = &self.grid.rows[row_index][col_index];
+            let inferred_type = self.infer_type_from_value(value);
+
+            // Create markdown hover content for cell
+            let markdown_content = format!(
+                "## Cell: {}\n\n**Type:** {}\n**Row Index:** {}",
+                column_name,
+                inferred_type,
+                row_index + 1
+            );
+
+            Some(Hover {
+                contents: HoverContents::Scalar(MarkedString::String(markdown_content)),
+                range: Some(Range::new(position, position)),
             })
         } else {
             None
@@ -318,11 +431,6 @@ impl Document {
         self.set_uri(params.text_document.uri);
         self.load_content(&content);
 
-        // Try to load sidecar if exists
-        let sidecar_path = self
-            .uri
-            .to_file_path()
-            .unwrap_or_else(|_| PathBuf::from("/dev/null"));
         // Try to load sidecar if exists
         let sidecar_path = self
             .uri
