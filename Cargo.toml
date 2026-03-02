@@ -1,7 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "zed-sheets-lsp"
+    "zed-sheets-lsp",
+    "src"
 ]
 
 [workspace.dependencies]

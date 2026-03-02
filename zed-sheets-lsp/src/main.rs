@@ -1,5 +1,5 @@
 use tokio::io::{stdin, stdout};
-use tower_lsp::{LanguageServer, LspService, Server};
+use tower_lsp::{LspService, Server};
 
 mod document;
 use document::Document;

@@ -12,10 +12,8 @@ impl zed::Extension for ZedSheetsExtension {
         _language_server_id: &LanguageServerId,
         _worktree: &Worktree,
     ) -> Result<Command> {
-        // Download or locate the zed-sheets-lsp binary
-        let path = self.get_or_download_lsp_binary()?;
         Ok(Command {
-            command: path,
+            command: "zed-sheets-lsp".to_string(),
             args: vec![],
             env: vec![],
         })

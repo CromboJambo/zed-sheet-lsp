@@ -5,12 +5,7 @@ edition = "2024"
 
 [dependencies]
 zed_extension_api = "0.1"
-tower-lsp = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-petgraph = { workspace = true }
 
 [[bin]]
 name = "zed-sheets"
-path = "src/main.rs"
+path = "main.rs"
