@@ -8,6 +8,7 @@ repository = "https://github.com/CromboJambo/zed-sheets"
 
 [grammars.tsv]
 repository = "https://github.com/nickel-lang/tree-sitter-tsv"
+rev = "main"
 
 [language_servers.zed-sheets-lsp]
 name = "Zed Sheets LSP"
