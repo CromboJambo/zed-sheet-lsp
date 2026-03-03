@@ -4,6 +4,7 @@ members = [
     "zed-sheets-lsp",
     "src"
 ]
+default-members = ["src"]
 
 [workspace.dependencies]
 tower-lsp = "0.20"
