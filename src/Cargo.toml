@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 zed_extension_api = "0.1"
 
-[[bin]]
-name = "zed-sheets"
-path = "main.rs"
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
