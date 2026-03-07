@@ -1,7 +1,53 @@
 # Zed Sheets — Extension Blueprint
 
-> A TSV-native, Nushell-powered spreadsheet LSP for Zed.
+> A TSV-native, Nushell-powered spreadsheet LSP for Zed.  
 > Stack: `.tsv` for data, `.nu` for logic, LSP as the intelligence layer.
+
+---
+
+## 🎥 Demo: Preview Toggle Feature
+
+This demo "fakes" the preview toggle (eyeball icon) feature using tmux + tabiew to demonstrate what Zed Sheets LSP already provides. It's a proof-of-concept showing that the preview API all that's missing.
+
+### Quick Demo
+
+```bash
+# Run the demo (requires: tabiew, nu, asciinema)
+./demo/demo-record.sh demo/assets/sample.tsv
+```
+
+This creates a tmux layout with:
+- **Left pane**: tabiew grid preview (like the eyeball preview tab)
+- **Right pane**: Raw TSV with LSP hover/completions working
+- **Bottom pane**: Nu REPL for filtering and transforming data
+
+### What the Demo Shows
+
+1. **Hover on TSV cells** - Shows column name + type (already works in Zed LSP)
+2. **Grid preview** - tabiew renders TSV as a spreadsheet
+3. **Same file, two views** - Raw TSV on right, grid on left
+4. **Edit propagation** - Changes in raw TSV update the grid
+5. **Completions** - Tab completion for column references
+6. **Nu integration** - Filter/transform data in a REPL pane
+
+### Demo Walkthrough
+
+See the [`demo/`](demo/) folder for:
+- [`demo-record.sh`](demo/demo-record.sh) - Complete demo recording script
+- [`demo-standalone.sh`](demo/demo-standalone.sh) - Demo without Zed installed
+- [`tsv-preview-session.sh`](demo/tsv-preview-session.sh) - Simple tmux session launcher
+- [`tsv-preview-session.nu`](demo/tsv-preview-session.nu) - Nushell version
+
+### Why This Demo Matters
+
+The demo proves that Zed Sheets LSP already provides:
+- ✅ Hover on TSV cells (column name + type)
+- ✅ Completions for column references
+- ✅ Diagnostics for invalid data
+- ✅ Grid view via tabiew
+- ✅ Nu integration for filtering/transforming
+
+All that's missing is the **preview API** to expose this functionality in Zed. The demo video (asciinema recording) shows exactly what the preview toggle would unlock.
 
 ---
 
@@ -41,6 +87,15 @@ zed-sheets/
 │   └── tsv/
 │       ├── config.toml
 │       └── highlights.scm  # Basic column/header syntax highlighting
+├── demo/                   # Demo infrastructure for preview toggle
+│   ├── assets/
+│   │   └── sample.tsv      # Sample TSV data file
+│   ├── demo.sh             # Full demo with Zed + tabiew
+│   ├── demo-standalone.sh  # Demo without Zed (for recording)
+│   ├── demo-record.sh      # Demo recording script
+│   ├── tsv-preview-session.sh  # Simple tmux session launcher
+│   ├── tsv-preview-session.nu    # Nushell version
+│   └── README.md           # Demo documentation
 └── tests/
     └── fixtures/           # Sample .tsv + .zedsheets.json pairs
 ```
@@ -87,27 +142,47 @@ The LSP evaluates these via `nu --stdin` for diagnostics, or shells out to valid
 ## Testing
 
 Sample test fixtures included:
-- `sample.tsv` and `sample.zedsheets.json`
-- `test_basic.tsv` and `test_basic.zedsheets.json`
-- `circular_test.tsv` and `circular_test.zedsheets.json`
+- `tests/fixtures/sample.tsv` and `tests/fixtures/sample.tsv.zedsheets.json`
+- `tests/fixtures/test_basic.tsv` and `tests/fixtures/test_basic.tsv.zedsheets.json`
+- `tests/fixtures/circular_test.tsv` and `tests/fixtures/circular_test.tsv.zedsheets.json`
 
 These files demonstrate various use cases including circular dependencies for diagnostics testing.
 
 ---
 
-## Build Status
+## Build
 
-✅ All core components implemented:
-- TSV parser
-- Sidecar loader  
-- Dependency graph
-- LSP server framework
-- Diagnostics system
-- Completions system
-- Extension manifest
-- Language configuration
-- Syntax highlighting rules
+```bash
+# Build the workspace
+cargo build --workspace
 
-✅ Tests included with sample data files
+# Or use the build script
+./build.sh
+```
 
-This implementation follows the blueprint specification and provides a complete foundation for building out the full Zed Sheets extension.
+---
+
+## Development
+
+### Run the LSP Server
+
+```bash
+cargo run --package zed-sheets-lsp
+```
+
+### Run Tests
+
+```bash
+cargo test
+```
+
+---
+
+## License
+
+This project is licensed under the MIT License. See the main repo for details.
+
+---
+
+**Demo Link:** [asciinema recording](TBD)  
+**GitHub Repo:** https://github.com/CromboJambo/zed-sheet-lsp

@@ -5,7 +5,7 @@ use zed_extension_api::{
     set_language_server_installation_status,
 };
 
-const GITHUB_REPO: &str = "crombo/zed-sheets-lsp";
+const GITHUB_REPO: &str = "CromboJambo/zed-sheet-lsp";
 const LSP_BIN_NAME: &str = "zed-sheets-lsp";
 
 struct ZedSheetsExtension {
