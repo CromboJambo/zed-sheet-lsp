@@ -17,11 +17,7 @@
 $env.TMUX_SESSION_NAME = "zed-sheets-demo"
 $env.TABIEW_PORT = 3000
 
-# Ensure dependencies are installed
-if (which tabiew | is-empty) {
-    print $"[ERROR] tabiew not found. Install with: curl -L https://raw.githubusercontent.com/rodaine/tabiew/main/install.sh | bash"
-    exit 1
-}
+
 
 if (which nu | is-empty) {
     print $"[ERROR] Nushell not found. Install with: curl -fsSL https://nushell.sh/install.ps1 | nix run"
