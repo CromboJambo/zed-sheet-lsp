@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 # zed-sheet-lsp/demo/tsv-preview-session.nu
 #
 # Demo script that "fakes" the Zed preview toggle feature
@@ -27,70 +28,72 @@ if (which nu | is-empty) {
     exit 1
 }
 
-# Create the session script
-def create-session-script --in-raw --files:[$env.ARGS] {
-    |$file as string
+def create-session-script [$file: string] {
+    let template = '
+#!/bin/bash
+set -e
 
-    """
-    #!/bin/bash
-    set -e
+SESSION_NAME="__SESSION_NAME__"
+TSV_FILE="__TSV_FILE__"
 
-    SESSION_NAME="$env.TMUX_SESSION_NAME"
-    TSV_FILE="$file"
+echo "Starting Zed Sheets demo session..."
+echo "File: $TSV_FILE"
 
-    echo "Starting Zed Sheets demo session..."
-    echo "File: $TSV_FILE"
+# Create tmux session if it does not exist
+if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux new-session -d -s "$SESSION_NAME" -x 160 -y 100
 
-    # Create tmux session if it doesn't exist
-    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux new-session -d -s "$SESSION_NAME" -x 160 -y 100
+    # Set up panes: tabiew on left (50%), Zed on right (50%)
+    tmux split-window -h -t "$SESSION_NAME" -c "$(dirname "$TSV_FILE")"
 
-        # Set up panes: tabiew on left (50%), Zed on right (50%)
-        tmux split-window -v -t "$SESSION_NAME" -c "$TSV_FILE"
+    # Pane 1: tabiew (grid preview)
+    tmux select-pane -t "$SESSION_NAME":0.0
+    tmux send-keys -t "$SESSION_NAME":0.0 "tabiew \"$TSV_FILE\" --port __TABIEW_PORT__" Enter
 
-        # Pane 1: tabiew (grid preview) - left side
-        (tmux select-pane -t "$SESSION_NAME" -l)
-        tmux send-keys -t "$SESSION_NAME" "tabiew $TSV_FILE --port $env.TABIEW_PORT" Enter
+    # Pane 2: Zed (raw TSV with LSP)
+    tmux select-pane -t "$SESSION_NAME":0.1
+    tmux send-keys -t "$SESSION_NAME":0.1 "zed open \"$TSV_FILE\"" Enter
 
-        # Pane 2: Zed (raw TSV with LSP) - right side
-        (tmux select-pane -t "$SESSION_NAME" -r)
-        tmux send-keys -t "$SESSION_NAME" "zed open '$TSV_FILE'" Enter
+    # Enable mouse support for better UX
+    tmux set-option -g mouse on
 
-        # Enable mouse support for better UX
-        tmux set-option -g mouse on
+    echo "Session '"'"'$SESSION_NAME'"'"' created with 2 panes"
+    echo "Left: tabiew grid preview"
+    echo "Right: Zed raw TSV with LSP hover"
+    echo ""
+    echo "Controls:"
+    echo "  Press Ctrl+b then % to split pane"
+    echo "  Press Ctrl+b then x to close pane"
+else
+    echo "Session '"'"'$SESSION_NAME'"'"' already exists"
+fi
 
-        echo "Session '$SESSION_NAME' created with 2 panes"
-        echo "Left: tabiew grid preview"
-        echo "Right: Zed raw TSV with LSP hover"
-        echo ""
-        echo "Controls:"
-        echo "  Press 'b' to see all available tmux binding keys"
-        echo "  Press Ctrl+b then '%' to split pane"
-        echo "  Press Ctrl+b then 'x' to close pane"
-    else
-        echo "Session '$SESSION_NAME' already exists"
-        tmux attach -t "$SESSION_NAME"
-    fi
-    """
+tmux attach -t "$SESSION_NAME"
+'
+
+    $template
+    | str replace -a "__SESSION_NAME__" $env.TMUX_SESSION_NAME
+    | str replace -a "__TSV_FILE__" $file
+    | str replace -a "__TABIEW_PORT__" ($env.TABIEW_PORT | into string)
 }
 
-# Generate and run the session script
-if $#args > 0 {
-    $file = $args[0]
-    if ($file | path-exists) {
-        $script_content = (create-session-script $file)
-        print $script_content
-        echo ""
-        print $"Run the following in your terminal:"
-        print $"  $ (echo $script_content | lines | str replace "''" "") | str replace "''' " "''" ) | into string
-        print $"  eval '(echo $script_content | lines | str replace \"'\"'\" \"\"\" '') | str replace \"'\"'\"' ' \"'\"'\"'\"'\"' ' \"'\"')\""
+def main [file?: string] {
+    if ($file | is-not-empty) {
+        if ($file | path exists) {
+            print $"Creating session script for: $file"
+            print ""
+            print (create-session-script $file)
+            print ""
+            print "To run this session, copy and paste the script above into your terminal."
+        } else {
+            print $"[ERROR] File not found: $file"
+            exit 1
+        }
     } else {
-        print $"[ERROR] File not found: $file"
-        exit 1
+        print "Usage: nu demo/tsv-preview-session.nu <tsv-file>"
+        print ""
+        print "This will generate a tmux session script with:"
+        print "  - Left pane: tabiew showing grid preview (like Zed's eyeball tab)"
+        print "  - Right pane: Zed showing raw TSV with LSP hover/completions"
     }
-} else {
-    print "Usage: nu demo/tsv-preview-session.nu <tsv-file>"
-    print ""
-    print "Or use the bash wrapper:"
-    print "  ./demo/tsv-preview-session.sh <tsv-file>"
 }
