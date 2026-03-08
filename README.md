@@ -1,188 +1,103 @@
-# Zed Sheets — Extension Blueprint
+# Zed Sheets
 
-> A TSV-native, Nushell-powered spreadsheet LSP for Zed.  
-> Stack: `.tsv` for data, `.nu` for logic, LSP as the intelligence layer.
+Zed-facing language tooling for `nustage`.
 
----
+This repository is not the core spreadsheet or Power Query replacement. It is the thin integration layer that lets Zed understand tabular source files and, eventually, `nustage` sidecars and pipeline state.
 
-## 🎥 Demo: Preview Toggle Feature
+## Positioning
 
-This demo "fakes" the preview toggle (eyeball icon) feature using tmux + tabiew to demonstrate what Zed Sheets LSP already provides. It's a proof-of-concept showing that the preview API all that's missing.
+`nustage` owns the product model:
 
-### Quick Demo
+- source loading for grid-shaped data
+- canonical step pipeline
+- sidecar persistence
+- schema history
+- export/transpilation helpers
 
-```bash
-# Run the demo (requires: tabiew, nu, asciinema)
-./demo/demo-record.sh demo/assets/sample.tsv
-```
+`zed-sheet-lsp` owns the editor integration:
 
-This creates a tmux layout with:
-- **Left pane**: tabiew grid preview (like the eyeball preview tab)
-- **Right pane**: Raw TSV with LSP hover/completions working
-- **Bottom pane**: Nu REPL for filtering and transforming data
+- language registration for `.tsv`
+- LSP lifecycle inside Zed
+- hover, completion, and diagnostics
+- future pipeline-aware code actions, rename, symbols, and preview hooks
 
-### What the Demo Shows
+If `nustage` is the stage, this repo is the adapter that lets Zed witness and manipulate it.
 
-1. **Hover on TSV cells** - Shows column name + type (already works in Zed LSP)
-2. **Grid preview** - tabiew renders TSV as a spreadsheet
-3. **Same file, two views** - Raw TSV on right, grid on left
-4. **Edit propagation** - Changes in raw TSV update the grid
-5. **Completions** - Tab completion for column references
-6. **Nu integration** - Filter/transform data in a REPL pane
+## What Works Today
 
-### Demo Walkthrough
+This repo is currently a narrow TSV-focused spike.
 
-See the [`demo/`](demo/) folder for:
-- [`demo-record.sh`](demo/demo-record.sh) - Complete demo recording script
-- [`demo-standalone.sh`](demo/demo-standalone.sh) - Demo without Zed installed
-- [`tsv-preview-session.sh`](demo/tsv-preview-session.sh) - Simple tmux session launcher
-- [`tsv-preview-session.nu`](demo/tsv-preview-session.nu) - Nushell version
+- Zed extension manifest and language wiring in [extension.toml](./extension.toml) and [languages/tsv/config.toml](./languages/tsv/config.toml)
+- Extension bootstrap that launches `zed-sheets-lsp` from `PATH` or downloads a published release asset in [src/lib.rs](./src/lib.rs)
+- LSP server with:
+  - full document sync
+  - cell/header hover
+  - column completion
+  - basic diagnostics for missing referenced columns and circular references
+  in [zed-sheets-lsp/src/document.rs](./zed-sheets-lsp/src/document.rs)
 
-### Why This Demo Matters
+## What Does Not Exist Yet
 
-The demo proves that Zed Sheets LSP already provides:
-- ✅ Hover on TSV cells (column name + type)
-- ✅ Completions for column references
-- ✅ Diagnostics for invalid data
-- ✅ Grid view via tabiew
-- ✅ Nu integration for filtering/transforming
+The repo should be evaluated as an adapter spike, not a finished product.
 
-All that's missing is the **preview API** to expose this functionality in Zed. The demo video (asciinema recording) shows exactly what the preview toggle would unlock.
+- No in-Zed grid preview
+- No live `nustage` sidecar integration
+- No pipeline execution or schema inference from `nustage`
+- No real `rename`, `definition`, or `workspace/symbol` support in the active server
+- No meaningful automated test coverage yet
 
----
+The files under `demo/` are still useful for pitching the witness-layer idea, but they are not an actual Zed integration surface.
 
-## Overview
+## Architecture Direction
 
-This project implements a Zed extension that provides spreadsheet functionality using:
-- TSV files for data storage
-- Nushell scripts for column formulas
-- LSP for intelligence and diagnostics
+Target split:
 
-The extension is built with a layered architecture:
-1. **TSV parsing** - handles data structure
-2. **Sidecar metadata** - stores column types and formulas  
-3. **Dependency graph** - tracks formula dependencies
-4. **LSP server** - provides IDE features like hover, diagnostics, completions
+1. `nustage`
+   - canonical sidecar: `.nustage.json`
+   - transformation step model
+   - schema snapshots and drift detection
+   - execution and preview semantics
+   - optional export targets like Power Query M
 
----
+2. `zed-sheet-lsp`
+   - file association and startup in Zed
+   - diagnostics against source data and sidecar definitions
+   - editing affordances for pipeline authoring
+   - preview or witness-pane hooks when Zed exposes enough API surface
 
-## Repository Structure
+That boundary is described in [docs/NUSTAGE_INTEGRATION.md](./docs/NUSTAGE_INTEGRATION.md).
+Cross-repo placement rules are in [docs/STACK_BOUNDARIES.md](./docs/STACK_BOUNDARIES.md).
 
-```
-zed-sheets/
-├── extension.toml          # Zed extension manifest
-├── Cargo.toml              # Rust workspace
-├── src/
-│   └── lib.rs              # Zed extension entry point (compiles to WASM)
-├── zed-sheets-lsp/         # The actual LSP binary (runs outside WASM)
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs
-│       ├── document.rs     # TSV parsing & in-memory grid model
-│       ├── sidecar.rs      # .zedsheets.json sidecar (column types, nu bindings)
-│       ├── dag.rs          # Dependency graph across TSV+nu
-│       ├── diagnostics.rs  # Validation & error reporting
-│       └── completions.rs  # Autocomplete for nu pipelines & column refs
-├── languages/
-│   └── tsv/
-│       ├── config.toml
-│       └── highlights.scm  # Basic column/header syntax highlighting
-├── demo/                   # Demo infrastructure for preview toggle
-│   ├── assets/
-│   │   └── sample.tsv      # Sample TSV data file
-│   ├── demo.sh             # Full demo with Zed + tabiew
-│   ├── demo-standalone.sh  # Demo without Zed (for recording)
-│   ├── demo-record.sh      # Demo recording script
-│   ├── tsv-preview-session.sh  # Simple tmux session launcher
-│   ├── tsv-preview-session.nu    # Nushell version
-│   └── README.md           # Demo documentation
-└── tests/
-    └── fixtures/           # Sample .tsv + .zedsheets.json pairs
-```
+## Current Assessment
 
----
+This repository makes sense if you read it as:
 
-## Features Implemented
+"Can Zed act as a good editor and witness surface for `nustage` pipelines over TSV and similar tabular data?"
 
-### LSP Capabilities (What Zed Gets)
+It makes much less sense if you read it as:
 
-| LSP Feature | What It Does in Zed Sheets |
-|---|---|
-| `textDocument/hover` | Column name → type, unit, nu expression, dependents |
-| `textDocument/completion` | Inside `.nu` sidecar expressions: column names, nu builtins |
-| `textDocument/diagnostic` | Circular deps, type mismatches, missing columns |
-| `textDocument/rename` | Rename a header → updates all `$row.name` references in sidecar |
-| `textDocument/definition` | Jump from derived column → its nu expression in sidecar |
-| `workspace/symbol` | List all columns, named ranges across the workspace |
+"Is this already a spreadsheet product inside Zed?"
 
----
-
-## Nushell as the Formula Layer
-
-Instead of inventing formula syntax, `derived` columns are just nu pipelines. Examples:
-
-```nu
-# Single-row derived value
-$row.revenue * $row.quantity
-
-# Aggregate (whole column)
-$data | get price | math sum
-
-# Conditional
-if $row.status == "active" { $row.value } else { 0 }
-
-# String ops
-$row.first_name + " " + $row.last_name
-```
-
-The LSP evaluates these via `nu --stdin` for diagnostics, or shells out to validate syntax without running. For hover, it can show the inferred output type.
-
----
-
-## Testing
-
-Sample test fixtures included:
-- `tests/fixtures/sample.tsv` and `tests/fixtures/sample.tsv.zedsheets.json`
-- `tests/fixtures/test_basic.tsv` and `tests/fixtures/test_basic.tsv.zedsheets.json`
-- `tests/fixtures/circular_test.tsv` and `tests/fixtures/circular_test.tsv.zedsheets.json`
-
-These files demonstrate various use cases including circular dependencies for diagnostics testing.
-
----
-
-## Build
-
-```bash
-# Build the workspace
-cargo build --workspace
-
-# Or use the build script
-./build.sh
-```
-
----
+The first is plausible. The second is still mostly pitch material.
 
 ## Development
 
-### Run the LSP Server
+Build the workspace:
+
+```bash
+cargo build --workspace
+```
+
+Run the LSP directly:
 
 ```bash
 cargo run --package zed-sheets-lsp
 ```
 
-### Run Tests
+Run tests:
 
 ```bash
-cargo test
+cargo test --workspace
 ```
 
----
-
-## License
-
-This project is licensed under the MIT License. See the main repo for details.
-
----
-
-**Demo Link:** [asciinema recording](TBD)  
-**GitHub Repo:** https://github.com/CromboJambo/zed-sheet-lsp
+Note: the workspace currently compiles, but `cargo test --workspace` exercises effectively zero real tests. See [docs/NUSTAGE_REUSE_AUDIT.md](./docs/NUSTAGE_REUSE_AUDIT.md) for the current gaps and risks.
