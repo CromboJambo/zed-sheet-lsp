@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use tower_lsp::lsp_types::Url;
 
 pub use crate::document::{
@@ -41,10 +42,45 @@ impl CoreSheetDocument {
         self.sidecar = sidecar;
         self
     }
+
+    pub fn resolve_link_target(&self, source_uri: &Url, row: usize, col: usize) -> Option<PathBuf> {
+        let cell = self.sheet.data_cell(row, col)?;
+        resolve_cell_link_target(source_uri, cell)
+    }
+}
+
+pub fn resolve_cell_link_target(source_uri: &Url, cell: &Cell) -> Option<PathBuf> {
+    let CellValue::Link(link) = &cell.value else {
+        return None;
+    };
+
+    let source_path = source_uri.to_file_path().ok()?;
+    let base_dir = source_path.parent()?;
+    Some(normalize_relative_path(base_dir.join(&link.path)))
+}
+
+fn normalize_relative_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use tower_lsp::lsp_types::Url;
+
     use super::{CellValue, CoreSheetDocument, SourceFormat};
 
     #[test]
@@ -60,5 +96,22 @@ mod tests {
         assert_eq!(doc.sheet.rows.len(), 1);
         assert!(matches!(doc.sheet.rows[0][1].value, CellValue::Link(_)));
         assert!(doc.sidecar.is_none());
+    }
+
+    #[test]
+    fn resolves_relative_markdown_link_targets() {
+        let doc = CoreSheetDocument::from_text(
+            "\
+| Key | Spec |
+|-----|------|
+| user | [User](./docs/user.md) |",
+        );
+        let uri = Url::from_file_path(Path::new("/tmp/demo.sheet.md")).expect("file url");
+
+        let target = doc
+            .resolve_link_target(&uri, 1, 1)
+            .expect("link target should resolve");
+
+        assert_eq!(target, Path::new("/tmp/docs/user.md"));
     }
 }

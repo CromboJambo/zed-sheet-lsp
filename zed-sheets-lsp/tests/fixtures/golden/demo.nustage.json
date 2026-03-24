@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "columns": {
+    "Key": { "type": "string" },
+    "Spec": { "type": "link" },
+    "Formula": { "type": "derived", "nu_expr": "$row.price * $row.qty" },
+    "Status": { "type": "bool" }
+  },
+  "named_ranges": {}
+}

@@ -72,6 +72,7 @@ That boundary is described in [docs/NUSTAGE_INTEGRATION.md](./docs/NUSTAGE_INTEG
 Cross-repo placement rules are in [docs/STACK_BOUNDARIES.md](./docs/STACK_BOUNDARIES.md).
 The MVP rich-cell and layer model is described in [docs/MVP_SHEET_MODEL.md](./docs/MVP_SHEET_MODEL.md).
 The reusable core facade for editor and terminal frontends lives in [zed-sheets-lsp/src/core.rs](./zed-sheets-lsp/src/core.rs).
+The team-facing ownership and golden-path workflow live in [docs/TEAM_ARCHITECTURE.md](./docs/TEAM_ARCHITECTURE.md).
 
 ## Current Assessment
 
@@ -109,5 +110,7 @@ Recommended file convention for the new direction:
 
 - use `.sheet.md` when the primary editable artifact is a Markdown table witness
 - keep `.tsv` as a compatibility source path during migration
+
+Golden-path fixtures for team onboarding live under [zed-sheets-lsp/tests/fixtures/golden](./zed-sheets-lsp/tests/fixtures/golden).
 
 Note: the workspace currently compiles, but `cargo test --workspace` still has light coverage overall. See [docs/NUSTAGE_REUSE_AUDIT.md](./docs/NUSTAGE_REUSE_AUDIT.md) for the current gaps and risks.
