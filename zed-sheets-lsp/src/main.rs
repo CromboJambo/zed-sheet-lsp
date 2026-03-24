@@ -1,8 +1,6 @@
 use tokio::io::{stdin, stdout};
 use tower_lsp::{LspService, Server};
-
-mod document;
-use document::Document;
+use zed_sheets_lsp::document::Document;
 
 #[tokio::main]
 async fn main() {

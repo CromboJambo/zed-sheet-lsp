@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
+
+use crate::core::CoreSheetDocument;
+use crate::model::Cell;
+use crate::sidecar::Sidecar;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Grid {
@@ -36,32 +39,206 @@ impl Grid {
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|header| header == name)
     }
+
+    pub fn from_markdown_table(table: &TableBlock) -> Self {
+        Self {
+            headers: table.headers.iter().map(|cell| cell.text.clone()).collect(),
+            rows: table
+                .rows
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.text.clone()).collect())
+                .collect(),
+            raw_lines: table.raw_lines.clone(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnMetadata {
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub unit: Option<String>,
-    pub nu_expr: Option<String>,
+#[derive(Debug, Clone, Default)]
+pub struct TableCell {
+    pub text: String,
+    pub range: Range,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NamedRange {
-    pub rows: Vec<usize>,
+#[derive(Debug, Clone, Default)]
+pub struct TableBlock {
+    pub headers: Vec<TableCell>,
+    pub rows: Vec<Vec<TableCell>>,
+    pub raw_lines: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Sidecar {
-    pub version: u32,
-    pub columns: HashMap<String, ColumnMetadata>,
-    #[serde(default)]
-    pub named_ranges: HashMap<String, NamedRange>,
+impl TableBlock {
+    pub fn parse(content: &str) -> Option<Self> {
+        let lines: Vec<&str> = content.lines().collect();
+
+        for start in 0..lines.len() {
+            let header_line = lines[start];
+            let Some(header_cells) = Self::parse_row(header_line, start as u32) else {
+                continue;
+            };
+
+            let Some(delimiter_line) = lines.get(start + 1) else {
+                continue;
+            };
+
+            if !Self::is_delimiter_row(delimiter_line) {
+                continue;
+            }
+
+            let mut rows = Vec::new();
+            let mut raw_lines = vec![header_line.to_string(), (*delimiter_line).to_string()];
+            let mut line_index = start + 2;
+
+            while let Some(line) = lines.get(line_index) {
+                if line.trim().is_empty() {
+                    break;
+                }
+
+                let Some(row_cells) = Self::parse_row(line, line_index as u32) else {
+                    break;
+                };
+
+                if row_cells.len() != header_cells.len() {
+                    break;
+                }
+
+                raw_lines.push((*line).to_string());
+                rows.push(row_cells);
+                line_index += 1;
+            }
+
+            return Some(Self {
+                headers: header_cells,
+                rows,
+                raw_lines,
+            });
+        }
+
+        None
+    }
+
+    fn is_delimiter_row(line: &str) -> bool {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+            return false;
+        }
+
+        let cells: Vec<&str> = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+
+        !cells.is_empty()
+            && cells.iter().all(|cell| {
+                let body = cell.trim_matches(':');
+                !body.is_empty() && body.chars().all(|ch| ch == '-')
+            })
+    }
+
+    fn parse_row(line: &str, line_index: u32) -> Option<Vec<TableCell>> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+            return None;
+        }
+
+        let mut cells = Vec::new();
+        let mut current = String::new();
+        let mut cell_start: Option<u32> = None;
+        let mut in_cell = false;
+
+        for (offset, ch) in line.char_indices() {
+            if ch == '|' {
+                if in_cell {
+                    let start = cell_start.unwrap_or(offset as u32);
+                    cells.push(TableCell {
+                        text: current.trim().to_string(),
+                        range: Range::new(
+                            Position::new(line_index, start),
+                            Position::new(line_index, offset as u32),
+                        ),
+                    });
+                    current.clear();
+                    cell_start = None;
+                } else {
+                    in_cell = true;
+                }
+                continue;
+            }
+
+            if in_cell {
+                if cell_start.is_none() {
+                    cell_start = Some(offset as u32);
+                }
+                current.push(ch);
+            }
+        }
+
+        Some(cells)
+    }
+
+    fn cell_at_position(&self, pos: Position) -> Option<(usize, usize, &TableCell)> {
+        for (col_index, cell) in self.headers.iter().enumerate() {
+            if Self::position_in_range(pos, cell.range) {
+                return Some((0, col_index, cell));
+            }
+        }
+
+        for (row_index, row) in self.rows.iter().enumerate() {
+            for (col_index, cell) in row.iter().enumerate() {
+                if Self::position_in_range(pos, cell.range) {
+                    return Some((row_index + 1, col_index, cell));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn position_in_range(pos: Position, range: Range) -> bool {
+        pos.line == range.start.line
+            && pos.character >= range.start.character
+            && pos.character <= range.end.character
+    }
 }
 
-impl Sidecar {
-    pub fn load_from_json(content: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(content)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFormat {
+    MarkdownTable,
+    Tsv,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceDocument {
+    pub format: SourceFormat,
+    pub grid: Grid,
+    pub table_block: Option<TableBlock>,
+}
+
+impl SourceDocument {
+    pub fn parse(content: &str) -> Self {
+        if let Some(table_block) = TableBlock::parse(content) {
+            return Self {
+                format: SourceFormat::MarkdownTable,
+                grid: Grid::from_markdown_table(&table_block),
+                table_block: Some(table_block),
+            };
+        }
+
+        Self {
+            format: SourceFormat::Tsv,
+            grid: Grid::parse_tsv(content),
+            table_block: None,
+        }
+    }
+}
+
+impl Default for SourceDocument {
+    fn default() -> Self {
+        Self {
+            format: SourceFormat::Tsv,
+            grid: Grid::default(),
+            table_block: None,
+        }
     }
 }
 
@@ -115,8 +292,7 @@ impl DependencyGraph {
 
 #[derive(Debug, Clone, Default)]
 struct SheetDocument {
-    grid: Grid,
-    sidecar: Option<Sidecar>,
+    core: CoreSheetDocument,
 }
 
 #[derive(Debug)]
@@ -131,24 +307,6 @@ impl Document {
             client,
             docs: RwLock::new(HashMap::new()),
         }
-    }
-
-    fn load_sidecar_for_uri(uri: &Url) -> Option<Sidecar> {
-        let sidecar_path = uri
-            .to_file_path()
-            .ok()
-            .and_then(|path| {
-                let filename = format!("{}.zedsheets.json", path.file_stem()?.to_string_lossy());
-                Some(path.parent()?.join(filename))
-            })
-            .unwrap_or_else(|| PathBuf::from("/dev/null"));
-
-        if !sidecar_path.exists() {
-            return None;
-        }
-
-        let content = std::fs::read_to_string(sidecar_path).ok()?;
-        Sidecar::load_from_json(&content).ok()
     }
 
     fn extract_column_refs(expr: &str) -> Vec<String> {
@@ -184,7 +342,7 @@ impl Document {
     fn diagnostics_for(doc: &SheetDocument) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
 
-        let Some(sidecar) = &doc.sidecar else {
+        let Some(sidecar) = &doc.core.sidecar else {
             return diagnostics;
         };
 
@@ -202,12 +360,15 @@ impl Document {
         for meta in sidecar.columns.values() {
             if let Some(expr) = &meta.nu_expr {
                 for reference in Self::extract_column_refs(expr) {
-                    if doc.grid.column_index(&reference).is_none() {
+                    if doc.core.sheet.column_index(&reference).is_none() {
                         diagnostics.push(Diagnostic {
                             range: Range::new(Position::new(0, 0), Position::new(0, 0)),
                             severity: Some(DiagnosticSeverity::WARNING),
                             source: Some("zed-sheets".to_string()),
-                            message: format!("Referenced column '{}' not found in TSV", reference),
+                            message: format!(
+                                "Referenced column '{}' not found in source table",
+                                reference
+                            ),
                             ..Default::default()
                         });
                     }
@@ -242,36 +403,45 @@ impl Document {
         let docs = self.docs.read().await;
         let doc = docs.get(&uri)?;
 
-        let line = doc.grid.raw_lines.get(pos.line as usize)?;
-        let col = Self::column_from_character(line, pos.character);
-        let header = doc.grid.headers.get(col)?;
+        if let Some(table) = &doc.core.source.table_block {
+            let (row_index, col, cell) = table.cell_at_position(pos)?;
+            let header_cell = doc.core.sheet.header_cell(col)?;
 
-        if pos.line == 0 {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!("**Column:** `{}`", header),
-                }),
-                range: None,
-            });
+            if row_index == 0 {
+                return Some(Self::hover_for_cell(
+                    header_cell,
+                    header_cell.display.as_str(),
+                    Some(cell.range),
+                ));
+            }
+
+            let data_cell = doc.core.sheet.data_cell(row_index, col)?;
+            return Some(Self::hover_for_cell(
+                data_cell,
+                header_cell.display.as_str(),
+                Some(cell.range),
+            ));
         }
 
-        let row_index = pos.line as usize - 1;
-        let value = doc
-            .grid
-            .rows
-            .get(row_index)
-            .and_then(|row| row.get(col))
-            .cloned()
-            .unwrap_or_default();
+        let line = doc.core.source.grid.raw_lines.get(pos.line as usize)?;
+        let col = Self::column_from_character(line, pos.character);
+        let header_cell = doc.core.sheet.header_cell(col)?;
 
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("**Column:** `{}`\n\n**Value:** `{}`", header, value),
-            }),
-            range: None,
-        })
+        if pos.line == 0 {
+            return Some(Self::hover_for_cell(
+                header_cell,
+                header_cell.display.as_str(),
+                None,
+            ));
+        }
+
+        let row_index = pos.line as usize;
+        let cell = doc.core.sheet.data_cell(row_index, col)?;
+        Some(Self::hover_for_cell(
+            cell,
+            header_cell.display.as_str(),
+            None,
+        ))
     }
 
     async fn completions_for(&self, params: CompletionParams) -> Option<CompletionResponse> {
@@ -285,24 +455,62 @@ impl Document {
             .and_then(|ctx| ctx.trigger_character.as_deref());
 
         let items: Vec<CompletionItem> = doc
-            .grid
-            .headers
-            .iter()
+            .core
+            .sheet
+            .column_names()
+            .into_iter()
             .map(|header| {
                 let label = match trigger {
                     Some("$") => format!("row.{}", header),
-                    _ => header.clone(),
+                    _ => header.to_string(),
                 };
                 CompletionItem {
                     label,
                     kind: Some(CompletionItemKind::FIELD),
-                    detail: Some("TSV column".to_string()),
+                    detail: Some(match doc.core.source.format {
+                        SourceFormat::MarkdownTable => "Markdown table column".to_string(),
+                        SourceFormat::Tsv => "TSV column".to_string(),
+                    }),
                     ..Default::default()
                 }
             })
             .collect();
 
         Some(CompletionResponse::Array(items))
+    }
+
+    fn hover_for_cell(cell: &Cell, header_label: &str, range: Option<Range>) -> Hover {
+        let title = match cell.kind {
+            crate::model::CellKind::Header => format!("**Column:** `{}`", header_label),
+            _ => format!(
+                "**Column:** `{}`\n\n**Value:** `{}`",
+                header_label, cell.display
+            ),
+        };
+
+        let detail = match &cell.value {
+            crate::model::CellValue::Link(link) => format!("\n\n**Link:** `{}`", link.path),
+            crate::model::CellValue::Formula(formula) => {
+                format!("\n\n**Formula:** `{}`", formula.expr)
+            }
+            crate::model::CellValue::Ref(cell_ref) => {
+                let target = cell_ref
+                    .column_name
+                    .clone()
+                    .or_else(|| cell_ref.path.clone())
+                    .unwrap_or_default();
+                format!("\n\n**Ref:** `{}`", target)
+            }
+            _ => String::new(),
+        };
+
+        Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("{title}{detail}"),
+            }),
+            range,
+        }
     }
 }
 
@@ -339,12 +547,11 @@ impl LanguageServer for Document {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let grid = Grid::parse_tsv(&params.text_document.text);
-        let sidecar = Self::load_sidecar_for_uri(&uri);
+        let core = CoreSheetDocument::from_text_and_uri(&uri, &params.text_document.text);
 
         {
             let mut docs = self.docs.write().await;
-            docs.insert(uri.clone(), SheetDocument { grid, sidecar });
+            docs.insert(uri.clone(), SheetDocument { core });
         }
 
         self.publish_diagnostics(&uri).await;
@@ -357,12 +564,12 @@ impl LanguageServer for Document {
             .first()
             .map(|change| change.text.as_str())
             .unwrap_or("");
-        let grid = Grid::parse_tsv(text);
 
         {
             let mut docs = self.docs.write().await;
-            let sidecar = docs.get(&uri).and_then(|doc| doc.sidecar.clone());
-            docs.insert(uri.clone(), SheetDocument { grid, sidecar });
+            let sidecar = docs.get(&uri).and_then(|doc| doc.core.sidecar.clone());
+            let core = CoreSheetDocument::from_text(text).with_sidecar(sidecar);
+            docs.insert(uri.clone(), SheetDocument { core });
         }
 
         self.publish_diagnostics(&uri).await;
@@ -386,5 +593,58 @@ impl LanguageServer for Document {
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>, tower_lsp::jsonrpc::Error> {
         Ok(self.completions_for(params).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Grid, SourceDocument, SourceFormat, TableBlock};
+    use tower_lsp::lsp_types::Position;
+
+    #[test]
+    fn parses_markdown_pipe_table_into_grid() {
+        let content = "\
+| Key | Var 1 | Var 2 |
+|-----|-------|-------|
+| A   | foo   | bar   |
+| B   | baz   | qux   |";
+
+        let table = TableBlock::parse(content).expect("expected markdown table");
+        let grid = Grid::from_markdown_table(&table);
+
+        assert_eq!(grid.headers, vec!["Key", "Var 1", "Var 2"]);
+        assert_eq!(grid.rows[0], vec!["A", "foo", "bar"]);
+        assert_eq!(grid.rows[1], vec!["B", "baz", "qux"]);
+    }
+
+    #[test]
+    fn maps_cursor_position_to_markdown_cell() {
+        let content = "\
+| Key | Var 1 | Var 2 |
+|-----|-------|-------|
+| A   | foo   | bar   |";
+
+        let table = TableBlock::parse(content).expect("expected markdown table");
+        let (row_index, col_index, cell) = table
+            .cell_at_position(Position::new(2, 9))
+            .expect("expected markdown cell");
+
+        assert_eq!(row_index, 1);
+        assert_eq!(col_index, 1);
+        assert_eq!(cell.text, "foo");
+    }
+
+    #[test]
+    fn prefers_markdown_table_as_primary_source_format() {
+        let content = "\
+| Key | Value |
+|-----|-------|
+| A   | 1     |";
+
+        let source = SourceDocument::parse(content);
+
+        assert_eq!(source.format, SourceFormat::MarkdownTable);
+        assert!(source.table_block.is_some());
+        assert_eq!(source.grid.headers, vec!["Key", "Value"]);
     }
 }

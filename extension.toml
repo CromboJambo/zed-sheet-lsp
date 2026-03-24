@@ -12,4 +12,4 @@ rev = "main"
 
 [language_servers.zed-sheets-lsp]
 name = "Zed Sheets LSP"
-languages = ["TSV"]
+languages = ["TSV", "Sheet Markdown"]
