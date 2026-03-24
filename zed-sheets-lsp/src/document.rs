@@ -479,6 +479,33 @@ impl Document {
         Some(CompletionResponse::Array(items))
     }
 
+    async fn definition_for(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let docs = self.docs.read().await;
+        let doc = docs.get(&uri)?;
+        let (row, col) = Self::cell_address_at_position(doc, pos)?;
+        let target = doc.core.resolve_link_target(&uri, row, col)?;
+        let target_uri = Url::from_file_path(target).ok()?;
+
+        Some(GotoDefinitionResponse::Scalar(Location::new(
+            target_uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+        )))
+    }
+
+    fn cell_address_at_position(doc: &SheetDocument, pos: Position) -> Option<(usize, usize)> {
+        if let Some(table) = &doc.core.source.table_block {
+            let (row_index, col, _) = table.cell_at_position(pos)?;
+            return Some((row_index, col));
+        }
+
+        let line = doc.core.source.grid.raw_lines.get(pos.line as usize)?;
+        let col = Self::column_from_character(line, pos.character);
+        Some((pos.line as usize, col))
+    }
+
     fn hover_for_cell(cell: &Cell, header_label: &str, range: Option<Range>) -> Hover {
         let title = match cell.kind {
             crate::model::CellKind::Header => format!("**Column:** `{}`", header_label),
@@ -530,6 +557,7 @@ impl LanguageServer for Document {
                     TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec!["$".to_string(), ".".to_string()]),
                     ..Default::default()
@@ -594,12 +622,20 @@ impl LanguageServer for Document {
     ) -> Result<Option<CompletionResponse>, tower_lsp::jsonrpc::Error> {
         Ok(self.completions_for(params).await)
     }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>, tower_lsp::jsonrpc::Error> {
+        Ok(self.definition_for(params).await)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, SourceDocument, SourceFormat, TableBlock};
-    use tower_lsp::lsp_types::Position;
+    use super::{Document, Grid, SheetDocument, SourceDocument, SourceFormat, TableBlock};
+    use crate::core::CoreSheetDocument;
+    use tower_lsp::lsp_types::{Position, Url};
 
     #[test]
     fn parses_markdown_pipe_table_into_grid() {
@@ -646,5 +682,22 @@ mod tests {
         assert_eq!(source.format, SourceFormat::MarkdownTable);
         assert!(source.table_block.is_some());
         assert_eq!(source.grid.headers, vec!["Key", "Value"]);
+    }
+
+    #[test]
+    fn resolves_cell_address_for_markdown_link_cell() {
+        let source = "\
+| Key | Spec |
+|-----|------|
+| user | [User](./docs/user.md) |";
+        let uri = Url::from_file_path("/tmp/demo.sheet.md").expect("file url");
+        let doc = SheetDocument {
+            core: CoreSheetDocument::from_text_and_uri(&uri, source),
+        };
+
+        let address = Document::cell_address_at_position(&doc, Position::new(2, 14))
+            .expect("expected cell address");
+
+        assert_eq!(address, (1, 1));
     }
 }
