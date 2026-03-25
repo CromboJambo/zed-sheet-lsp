@@ -8,7 +8,7 @@ async fn main() {
     let stdout = stdout();
 
     // Create the LSP service with our document handler
-    let (service, socket) = LspService::new(|client| Document::new(client));
+    let (service, socket) = LspService::new(Document::new);
 
     // Start the server
     Server::new(stdin, stdout, socket).serve(service).await;

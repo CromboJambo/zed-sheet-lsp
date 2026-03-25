@@ -259,9 +259,14 @@ impl DependencyGraph {
         let mut visited = HashSet::new();
         let mut in_stack = HashSet::new();
 
-        self.edges
-            .keys()
-            .any(|node| !visited.contains(node) && self.visit(node, &mut visited, &mut in_stack))
+        // Check all nodes, including source-only nodes that may not be in edges
+        let all_nodes: HashSet<String> = self.edges.keys().cloned().collect();
+        for node in all_nodes {
+            if !visited.contains(&node) && self.visit(&node, &mut visited, &mut in_stack) {
+                return true;
+            }
+        }
+        false
     }
 
     fn visit(
@@ -446,6 +451,7 @@ impl Document {
 
     async fn completions_for(&self, params: CompletionParams) -> Option<CompletionResponse> {
         let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
         let docs = self.docs.read().await;
         let doc = docs.get(&uri)?;
 
@@ -454,11 +460,16 @@ impl Document {
             .as_ref()
             .and_then(|ctx| ctx.trigger_character.as_deref());
 
-        let items: Vec<CompletionItem> = doc
-            .core
-            .sheet
-            .column_names()
+        // Check if we're inside a cell expression (nu_expr)
+        let inside_expr = self.is_inside_cell_expression(&doc.core, &uri, pos);
+
+        let column_names = doc.core.sheet.column_names();
+        let items: Vec<CompletionItem> = column_names
             .into_iter()
+            .filter(|name| {
+                // Only show column completions if we're in a cell expression
+                inside_expr || trigger.is_some()
+            })
             .map(|header| {
                 let label = match trigger {
                     Some("$") => format!("row.{}", header),
@@ -477,6 +488,48 @@ impl Document {
             .collect();
 
         Some(CompletionResponse::Array(items))
+    }
+
+    fn is_inside_cell_expression(
+        &self,
+        core: &CoreSheetDocument,
+        uri: &Url,
+        pos: Position,
+    ) -> bool {
+        // Check if cursor position is within a cell's nu_expr field
+        // This is a simplified check - a full implementation would parse the cell content
+        if let Some(sheet) = &core.sheet {
+            // Check if cursor is within a data cell
+            if let Some((row, col)) = sheet.cell_at_position(pos) {
+                if row > 0 {
+                    // Not a header row
+                    if let Some(cell) = sheet.data_cell(row, col) {
+                        // Check if the cell has a nu_expr
+                        if let crate::model::CellValue::Formula(formula) = &cell.value {
+                            // Check if cursor is within the formula expression (not the "=")
+                            return self
+                                .is_cursor_in_formula_expression(formula.expr.as_str(), pos);
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn is_cursor_in_formula_expression(&self, expr: &str, pos: Position) -> bool {
+        // Simple check: cursor should be after the "=" and before the end
+        // A full implementation would track the actual cursor position within the expression
+        let equals_pos = expr.find('=');
+        if let Some(eq_pos) = equals_pos {
+            let expr_start = eq_pos + 1;
+            let cursor_pos = pos.line as usize * 1000 + pos.character as usize; // Simplified line-based position
+
+            // Check if cursor is within the expression bounds
+            cursor_pos >= expr_start && cursor_pos <= expr.len() + 1
+        } else {
+            false
+        }
     }
 
     async fn definition_for(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
@@ -534,7 +587,7 @@ impl Document {
         Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("{title}{detail}"),
+                value: format!("{}{}", title, detail),
             }),
             range,
         }
@@ -550,7 +603,7 @@ impl LanguageServer for Document {
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
                 name: "Zed Sheets LSP".to_string(),
-                version: Some("0.1.0".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -575,7 +628,7 @@ impl LanguageServer for Document {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let core = CoreSheetDocument::from_text_and_uri(&uri, &params.text_document.text);
+        let core = CoreSheetDocument::from_text_and_uri(&uri, &params.text_document.text).await;
 
         {
             let mut docs = self.docs.write().await;
