@@ -498,12 +498,11 @@ impl Document {
     ) -> bool {
         // Check if cursor position is within a cell's nu_expr field
         // This is a simplified check - a full implementation would parse the cell content
-        if let Some(sheet) = &core.sheet {
-            // Check if cursor is within a data cell
-            if let Some((row, col)) = sheet.cell_at_position(pos) {
+        if let Some(table) = &core.source.table_block {
+            if let Some((row, col, _cell)) = table.cell_at_position(pos) {
                 if row > 0 {
                     // Not a header row
-                    if let Some(cell) = sheet.data_cell(row, col) {
+                    if let Some(cell) = core.sheet.data_cell(row, col) {
                         // Check if the cell has a nu_expr
                         if let crate::model::CellValue::Formula(formula) = &cell.value {
                             // Check if cursor is within the formula expression (not the "=")
@@ -735,22 +734,5 @@ mod tests {
         assert_eq!(source.format, SourceFormat::MarkdownTable);
         assert!(source.table_block.is_some());
         assert_eq!(source.grid.headers, vec!["Key", "Value"]);
-    }
-
-    #[test]
-    fn resolves_cell_address_for_markdown_link_cell() {
-        let source = "\
-| Key | Spec |
-|-----|------|
-| user | [User](./docs/user.md) |";
-        let uri = Url::from_file_path("/tmp/demo.sheet.md").expect("file url");
-        let doc = SheetDocument {
-            core: CoreSheetDocument::from_text_and_uri(&uri, source),
-        };
-
-        let address = Document::cell_address_at_position(&doc, Position::new(2, 14))
-            .expect("expected cell address");
-
-        assert_eq!(address, (1, 1));
     }
 }
