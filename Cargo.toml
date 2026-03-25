@@ -2,9 +2,8 @@
 resolver = "3"
 members = [
     "zed-sheets-lsp",
-    "src"
 ]
-default-members = ["src"]
+default-members = ["zed-sheets-lsp"]
 
 [workspace.dependencies]
 tower-lsp = "0.20"
