@@ -6,7 +6,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::core::CoreSheetDocument;
 use crate::model::Cell;
-use crate::sidecar::Sidecar;
+use crate::sidecar::{ColumnMetadata, Sidecar};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Grid {
@@ -413,18 +413,23 @@ impl Document {
             let header_cell = doc.core.sheet.header_cell(col)?;
 
             if row_index == 0 {
+                let column_meta =
+                    Self::column_metadata_for_header(doc, header_cell.display.as_str());
                 return Some(Self::hover_for_cell(
                     header_cell,
                     header_cell.display.as_str(),
                     Some(cell.range),
+                    column_meta,
                 ));
             }
 
             let data_cell = doc.core.sheet.data_cell(row_index, col)?;
+            let column_meta = Self::column_metadata_for_header(doc, header_cell.display.as_str());
             return Some(Self::hover_for_cell(
                 data_cell,
                 header_cell.display.as_str(),
                 Some(cell.range),
+                column_meta,
             ));
         }
 
@@ -433,25 +438,28 @@ impl Document {
         let header_cell = doc.core.sheet.header_cell(col)?;
 
         if pos.line == 0 {
+            let column_meta = Self::column_metadata_for_header(doc, header_cell.display.as_str());
             return Some(Self::hover_for_cell(
                 header_cell,
                 header_cell.display.as_str(),
                 None,
+                column_meta,
             ));
         }
 
         let row_index = pos.line as usize;
         let cell = doc.core.sheet.data_cell(row_index, col)?;
+        let column_meta = Self::column_metadata_for_header(doc, header_cell.display.as_str());
         Some(Self::hover_for_cell(
             cell,
             header_cell.display.as_str(),
             None,
+            column_meta,
         ))
     }
 
     async fn completions_for(&self, params: CompletionParams) -> Option<CompletionResponse> {
         let uri = params.text_document_position.text_document.uri;
-        let pos = params.text_document_position.position;
         let docs = self.docs.read().await;
         let doc = docs.get(&uri)?;
 
@@ -460,16 +468,11 @@ impl Document {
             .as_ref()
             .and_then(|ctx| ctx.trigger_character.as_deref());
 
-        // Check if we're inside a cell expression (nu_expr)
-        let inside_expr = self.is_inside_cell_expression(&doc.core, &uri, pos);
-
-        let column_names = doc.core.sheet.column_names();
-        let items: Vec<CompletionItem> = column_names
+        let items: Vec<CompletionItem> = doc
+            .core
+            .sheet
+            .column_names()
             .into_iter()
-            .filter(|name| {
-                // Only show column completions if we're in a cell expression
-                inside_expr || trigger.is_some()
-            })
             .map(|header| {
                 let label = match trigger {
                     Some("$") => format!("row.{}", header),
@@ -488,47 +491,6 @@ impl Document {
             .collect();
 
         Some(CompletionResponse::Array(items))
-    }
-
-    fn is_inside_cell_expression(
-        &self,
-        core: &CoreSheetDocument,
-        uri: &Url,
-        pos: Position,
-    ) -> bool {
-        // Check if cursor position is within a cell's nu_expr field
-        // This is a simplified check - a full implementation would parse the cell content
-        if let Some(table) = &core.source.table_block {
-            if let Some((row, col, _cell)) = table.cell_at_position(pos) {
-                if row > 0 {
-                    // Not a header row
-                    if let Some(cell) = core.sheet.data_cell(row, col) {
-                        // Check if the cell has a nu_expr
-                        if let crate::model::CellValue::Formula(formula) = &cell.value {
-                            // Check if cursor is within the formula expression (not the "=")
-                            return self
-                                .is_cursor_in_formula_expression(formula.expr.as_str(), pos);
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    fn is_cursor_in_formula_expression(&self, expr: &str, pos: Position) -> bool {
-        // Simple check: cursor should be after the "=" and before the end
-        // A full implementation would track the actual cursor position within the expression
-        let equals_pos = expr.find('=');
-        if let Some(eq_pos) = equals_pos {
-            let expr_start = eq_pos + 1;
-            let cursor_pos = pos.line as usize * 1000 + pos.character as usize; // Simplified line-based position
-
-            // Check if cursor is within the expression bounds
-            cursor_pos >= expr_start && cursor_pos <= expr.len() + 1
-        } else {
-            false
-        }
     }
 
     async fn definition_for(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
@@ -558,7 +520,19 @@ impl Document {
         Some((pos.line as usize, col))
     }
 
-    fn hover_for_cell(cell: &Cell, header_label: &str, range: Option<Range>) -> Hover {
+    fn column_metadata_for_header<'a>(
+        doc: &'a SheetDocument,
+        header_label: &str,
+    ) -> Option<&'a ColumnMetadata> {
+        doc.core.sidecar.as_ref()?.get_column(header_label)
+    }
+
+    fn hover_for_cell(
+        cell: &Cell,
+        header_label: &str,
+        range: Option<Range>,
+        column_meta: Option<&ColumnMetadata>,
+    ) -> Hover {
         let title = match cell.kind {
             crate::model::CellKind::Header => format!("**Column:** `{}`", header_label),
             _ => format!(
@@ -583,13 +557,31 @@ impl Document {
             _ => String::new(),
         };
 
+        let metadata = column_meta
+            .map(Self::hover_metadata_for_column)
+            .unwrap_or_default();
+
         Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("{}{}", title, detail),
+                value: format!("{}{}{}", title, detail, metadata),
             }),
             range,
         }
+    }
+
+    fn hover_metadata_for_column(meta: &ColumnMetadata) -> String {
+        let mut detail = format!("\n\n**Type:** `{}`", meta.type_);
+
+        if let Some(unit) = &meta.unit {
+            detail.push_str(&format!("\n\n**Unit:** `{}`", unit));
+        }
+
+        if let Some(expr) = &meta.nu_expr {
+            detail.push_str(&format!("\n\n**Nu Expr:** `{}`", expr));
+        }
+
+        detail
     }
 }
 
@@ -627,7 +619,7 @@ impl LanguageServer for Document {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let core = CoreSheetDocument::from_text_and_uri(&uri, &params.text_document.text).await;
+        let core = CoreSheetDocument::from_text_and_uri(&uri, &params.text_document.text);
 
         {
             let mut docs = self.docs.write().await;
@@ -685,9 +677,19 @@ impl LanguageServer for Document {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{Document, Grid, SheetDocument, SourceDocument, SourceFormat, TableBlock};
     use crate::core::CoreSheetDocument;
-    use tower_lsp::lsp_types::{Position, Url};
+    use tower_lsp::lsp_types::{HoverContents, MarkupKind, Position, Url};
+
+    fn fixture_path(relative: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("golden")
+            .join(relative)
+    }
 
     #[test]
     fn parses_markdown_pipe_table_into_grid() {
@@ -734,5 +736,55 @@ mod tests {
         assert_eq!(source.format, SourceFormat::MarkdownTable);
         assert!(source.table_block.is_some());
         assert_eq!(source.grid.headers, vec!["Key", "Value"]);
+    }
+
+    #[test]
+    fn resolves_cell_address_for_markdown_link_cell() {
+        let source = "\
+| Key | Spec |
+|-----|------|
+| user | [User](./docs/user.md) |";
+        let uri = Url::from_file_path("/tmp/demo.sheet.md").expect("file url");
+        let doc = SheetDocument {
+            core: CoreSheetDocument::from_text_and_uri(&uri, source),
+        };
+
+        let address = Document::cell_address_at_position(&doc, Position::new(2, 14))
+            .expect("expected cell address");
+
+        assert_eq!(address, (1, 1));
+    }
+
+    #[test]
+    fn hover_includes_sidecar_column_metadata_when_present() {
+        let sheet_path = fixture_path("demo.sheet.md");
+        let sheet_text = std::fs::read_to_string(&sheet_path).expect("fixture sheet");
+        let sheet_uri = Url::from_file_path(&sheet_path).expect("sheet url");
+        let doc = SheetDocument {
+            core: CoreSheetDocument::from_text_and_uri(&sheet_uri, &sheet_text),
+        };
+
+        let header_cell = doc.core.sheet.header_cell(2).expect("formula header");
+        let data_cell = doc.core.sheet.data_cell(1, 2).expect("formula data");
+        let hover = Document::hover_for_cell(
+            data_cell,
+            header_cell.display.as_str(),
+            data_cell.meta.source_span,
+            Document::column_metadata_for_header(&doc, header_cell.display.as_str()),
+        );
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+
+        assert_eq!(markup.kind, MarkupKind::Markdown);
+        assert!(markup.value.contains("**Column:** `Formula`"));
+        assert!(markup.value.contains("**Formula:** `price * qty`"));
+        assert!(markup.value.contains("**Type:** `derived`"));
+        assert!(
+            markup
+                .value
+                .contains("**Nu Expr:** `$row.price * $row.qty`")
+        );
     }
 }

@@ -32,7 +32,7 @@ impl CoreSheetDocument {
         }
     }
 
-    pub async fn from_text_and_uri(uri: &Url, text: &str) -> Self {
+    pub fn from_text_and_uri(uri: &Url, text: &str) -> Self {
         let mut doc = Self::from_text(text);
         doc.sidecar = crate::sidecar::load_sidecar_for_uri(uri);
         doc

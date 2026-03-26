@@ -1,0 +1,6 @@
+name = "TSV"
+grammar = "tsv"
+path_suffixes = ["tsv"]
+tab_size = 4
+hard_tabs = true
+line_comments = ["#"]

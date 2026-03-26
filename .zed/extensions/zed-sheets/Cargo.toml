@@ -1,0 +1,18 @@
+[package]
+name = "zed-sheets-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tower-lsp = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = "0.4"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "zed-sheets-lsp"
+path = "src/main.rs"
